@@ -3,6 +3,7 @@ import {
   App,
   CachedMetadata,
   Command,
+  getAllTags,
   PluginManifest,
   prepareSimpleSearch,
   TFile,
@@ -277,10 +278,10 @@ export default class RequestHandler {
       certificateInfo:
         this.requestIsAuthenticated(req) && certificate
           ? {
-              validityDays: getCertificateValidityDays(certificate),
-              regenerateRecommended:
-                !getCertificateIsUptoStandards(certificate),
-            }
+            validityDays: getCertificateValidityDays(certificate),
+            regenerateRecommended:
+              !getCertificateIsUptoStandards(certificate),
+          }
           : undefined,
       apiExtensions: this.requestIsAuthenticated(req)
         ? this.apiExtensions.map(({ manifest }) => manifest)
@@ -972,6 +973,42 @@ export default class RequestHandler {
     );
   }
 
+  /**
+   * GET /tags/
+   * Returns all tags in the vault with their counts
+   */
+  tagsGet(req: express.Request, res: express.Response): void {
+    const tagCounts: Record<string, number> = {};
+
+    // Iterate over all markdown files
+    const files = this.app.vault.getMarkdownFiles();
+
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!cache) continue;
+
+      const tags = getAllTags(cache);
+      if (!tags) continue;
+
+      for (const tag of tags) {
+        // Normalize: remove leading # if present
+        const normalizedTag = tag.replace(/^#/, "");
+        tagCounts[normalizedTag] = (tagCounts[normalizedTag] || 0) + 1;
+      }
+    }
+
+    // Sort by count (descending) then alphabetically
+    const sortedTags = Object.entries(tagCounts)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([tag, count]) => ({ tag, count }));
+
+    res.json({
+      tags: sortedTags,
+      totalTags: sortedTags.length,
+      totalOccurrences: Object.values(tagCounts).reduce((a, b) => a + b, 0),
+    });
+  }
+
   async commandGet(req: express.Request, res: express.Response): Promise<void> {
     const commands: Command[] = [];
     for (const commandName in this.app.commands.commands) {
@@ -1344,6 +1381,8 @@ export default class RequestHandler {
 
     this.api.route("/commands/").get(this.commandGet.bind(this));
     this.api.route("/commands/:commandId/").post(this.commandPost.bind(this));
+
+    this.api.route("/tags/").get(this.tagsGet.bind(this));
 
     this.api.route("/search/").post(this.searchQueryPost.bind(this));
     this.api.route("/search/simple/").post(this.searchSimplePost.bind(this));
