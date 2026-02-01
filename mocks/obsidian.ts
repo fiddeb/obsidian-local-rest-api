@@ -187,3 +187,35 @@ export function prepareSimpleSearch(query: string): (value: string) => null | Se
   }
   return () => null;
 }
+
+/**
+ * Get all tags from a CachedMetadata object.
+ * This mimics the Obsidian API's getAllTags function.
+ */
+export function getAllTags(cache: CachedMetadata): string[] | null {
+  if (!cache) return null;
+
+  const tags: string[] = [];
+
+  // In-line tags (with #)
+  if (cache.tags) {
+    for (const tagObj of cache.tags) {
+      if (tagObj.tag) {
+        tags.push(tagObj.tag);
+      }
+    }
+  }
+
+  // Frontmatter tags
+  if (cache.frontmatter?.tags) {
+    const fmTags = cache.frontmatter.tags as string[];
+    if (Array.isArray(fmTags)) {
+      for (const tag of fmTags) {
+        // Frontmatter tags don't have #, add it for consistency
+        tags.push(tag.startsWith('#') ? tag : `#${tag}`);
+      }
+    }
+  }
+
+  return tags.length > 0 ? tags : null;
+}

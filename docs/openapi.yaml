@@ -522,6 +522,52 @@ paths:
         Execute a command.
       tags:
         - "Commands"
+  /tags/:
+    get:
+      description: |
+        Returns all tags used in the vault, along with the count of how many
+        notes use each tag. Tags are sorted by count (descending) and then
+        alphabetically. Both inline tags (#tag) and frontmatter tags are included.
+      responses:
+        "200":
+          content:
+            application/json:
+              example:
+                tags:
+                  - tag: "project"
+                    count: 42
+                  - tag: "meeting"
+                    count: 15
+                  - tag: "idea"
+                    count: 8
+                totalTags: 3
+                totalOccurrences: 65
+              schema:
+                properties:
+                  tags:
+                    description: "Array of tags with their occurrence counts"
+                    items:
+                      properties:
+                        tag:
+                          description: "The tag name (without leading #)"
+                          type: "string"
+                        count:
+                          description: "Number of notes containing this tag"
+                          type: "number"
+                      type: "object"
+                    type: "array"
+                  totalTags:
+                    description: "Total number of unique tags in the vault"
+                    type: "number"
+                  totalOccurrences:
+                    description: "Total number of tag occurrences across all notes"
+                    type: "number"
+                type: "object"
+          description: "A list of all tags in the vault with counts."
+      summary: |
+        Get all tags in the vault with occurrence counts.
+      tags:
+        - "Tags"
   /obsidian-local-rest-api.crt:
     get:
       responses:

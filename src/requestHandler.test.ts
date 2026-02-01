@@ -12,6 +12,7 @@ import {
   PluginManifest,
   _prepareSimpleSearchMock,
   SearchResult,
+  CachedMetadata,
 } from "../mocks/obsidian";
 
 describe("requestHandler", () => {
@@ -1174,6 +1175,89 @@ describe("requestHandler", () => {
         .post("/search/simple/")
         .set("Authorization", `Bearer ${API_KEY}`)
         .expect(400);
+    });
+  });
+
+  describe("tagsGet", () => {
+    test("unauthorized", async () => {
+      await request(server).get("/tags/").expect(401);
+    });
+
+    test("empty vault returns empty tags", async () => {
+      app.vault._markdownFiles = [];
+
+      const result = await request(server)
+        .get("/tags/")
+        .set("Authorization", `Bearer ${API_KEY}`)
+        .expect(200);
+
+      expect(result.body.tags).toEqual([]);
+      expect(result.body.totalTags).toEqual(0);
+      expect(result.body.totalOccurrences).toEqual(0);
+    });
+
+    test("returns tags with counts sorted by count descending", async () => {
+      const file1 = new TFile();
+      file1.path = "note1.md";
+      const file2 = new TFile();
+      file2.path = "note2.md";
+      const file3 = new TFile();
+      file3.path = "note3.md";
+
+      app.vault._markdownFiles = [file1, file2, file3];
+
+      // Mock getFileCache to return different tags per file
+      const cacheMock = new Map<string, CachedMetadata>();
+
+      const cache1 = new CachedMetadata();
+      cache1.tags = [{ tag: "#grafana" }, { tag: "#loki" }];
+      cache1.frontmatter = { tags: ["opentelemetry"] };
+      cacheMock.set("note1.md", cache1);
+
+      const cache2 = new CachedMetadata();
+      cache2.tags = [{ tag: "#grafana" }, { tag: "#tempo" }];
+      cache2.frontmatter = {};
+      cacheMock.set("note2.md", cache2);
+
+      const cache3 = new CachedMetadata();
+      cache3.tags = [{ tag: "#grafana" }];
+      cache3.frontmatter = { tags: ["loki"] };
+      cacheMock.set("note3.md", cache3);
+
+      app.metadataCache.getFileCache = (file: TFile) => cacheMock.get(file.path) || new CachedMetadata();
+
+      const result = await request(server)
+        .get("/tags/")
+        .set("Authorization", `Bearer ${API_KEY}`)
+        .expect(200);
+
+      expect(result.body.tags).toEqual([
+        { tag: "grafana", count: 3 },
+        { tag: "loki", count: 2 },
+        { tag: "opentelemetry", count: 1 },
+        { tag: "tempo", count: 1 },
+      ]);
+      expect(result.body.totalTags).toEqual(4);
+      expect(result.body.totalOccurrences).toEqual(7);
+    });
+
+    test("handles nested tags", async () => {
+      const file = new TFile();
+      file.path = "note.md";
+      app.vault._markdownFiles = [file];
+
+      const cache = new CachedMetadata();
+      cache.tags = [{ tag: "#observability/tracing" }, { tag: "#observability/metrics" }];
+      cache.frontmatter = {};
+      app.metadataCache._getFileCache = cache;
+
+      const result = await request(server)
+        .get("/tags/")
+        .set("Authorization", `Bearer ${API_KEY}`)
+        .expect(200);
+
+      expect(result.body.tags).toContainEqual({ tag: "observability/tracing", count: 1 });
+      expect(result.body.tags).toContainEqual({ tag: "observability/metrics", count: 1 });
     });
   });
 });
