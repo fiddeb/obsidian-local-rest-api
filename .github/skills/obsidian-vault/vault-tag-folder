@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+FOLDER="${1:-}"
+DRY_RUN="${2:-}"
+MIN_TAG_COUNT="${MIN_TAG_COUNT:-5}"
+
+if [ -z "$FOLDER" ]; then
+  echo "Usage: vault-tag-folder <folder> [--dry-run]"
+  echo "  MIN_TAG_COUNT=N  Only use tags with at least N occurrences (default: 5)"
+  exit 1
+fi
+
+echo "Scanning: $FOLDER"
+echo ""
+
+# Fetch all tags from vault API (only tags with >= MIN_TAG_COUNT occurrences)
+echo "Fetching tags from vault (min count: $MIN_TAG_COUNT)..."
+VAULT_TAGS=$(curl -k -s -H "Authorization: Bearer $OBSIDIAN_API_KEY" \
+  "https://127.0.0.1:27124/tags/" 2>/dev/null | \
+  jq -r --argjson min "$MIN_TAG_COUNT" '.tags[] | select(.count >= $min) | .tag' | \
+  grep -v "^daily/" | grep -v "^excalidraw" | grep -v "/" || echo "")
+
+if [ -z "$VAULT_TAGS" ]; then
+  echo "WARNING: Could not fetch tags from vault API, using fallback"
+  VAULT_TAGS="loki opentelemetry grafana tempo prometheus kafka minio tracing spire"
+fi
+
+TAG_COUNT=$(echo "$VAULT_TAGS" | wc -l | tr -d ' ')
+echo "Using $TAG_COUNT tags for auto-classification"
+echo ""
+
+process_folder() {
+  local current_folder="$1"
+  
+  # Get all files and folders
+  local list_output=$(vault-cli list "$current_folder" 2>/dev/null)
+  
+  # Process markdown files in current folder
+  echo "$list_output" | jq -r '.data.files[]? | select(endswith(".md"))' | while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    filepath="$current_folder/$f"
+    process_file "$filepath" "$filepath"
+  done
+  
+  # Recursively process subfolders (they end with /)
+  echo "$list_output" | jq -r '.data.files[]? | select(endswith("/"))' | while IFS= read -r subfolder; do
+    [ -z "$subfolder" ] && continue
+    # Remove trailing slash
+    subfolder="${subfolder%/}"
+    process_folder "$current_folder/$subfolder"
+  done
+}
+
+process_file() {
+  local filepath="$1"
+  local f="$2"
+  
+  meta=$(vault-cli get "$filepath" --metadata-only 2>/dev/null || echo '{}')
+  has_tags=$(echo "$meta" | jq -r '(.data.tags | length) // 0' 2>/dev/null || echo "0")
+  fm_tags=$(echo "$meta" | jq -r '.data.frontmatter.tags // ""' 2>/dev/null || echo "")
+  has_fm=$(echo "$meta" | jq -r '(.data.frontmatter | length) > 0' 2>/dev/null || echo "false")
+  
+  if [ "$has_tags" != "0" ] && [ "$fm_tags" != "unsorted" ] && [ "$fm_tags" != "[]" ]; then
+    echo "SKIP $f (already tagged)"
+    continue
+  fi
+  
+  content=$(vault-cli get "$filepath" --max-chars 3000 2>/dev/null | jq -r '.data.content // ""' || echo "")
+  
+  tags=""
+  if [ -z "$(echo "$content" | tr -d '[:space:]')" ]; then
+    tags="draft"
+  else
+    # Dynamic tag matching from vault tags
+    while IFS= read -r vault_tag; do
+      [ -z "$vault_tag" ] && continue
+      # Use the tag name as search pattern (case insensitive)
+      if echo "$content" | grep -qi "$vault_tag"; then
+        tags="$tags $vault_tag"
+      fi
+    done <<< "$VAULT_TAGS"
+    
+    # Trim and check if empty
+    tags=$(echo "$tags" | xargs)
+    [ -z "$tags" ] && tags="unsorted"
+  fi
+  
+  tags=$(echo $tags | xargs | awk '{for(i=1;i<=NF && i<=3;i++) printf "%s%s", $i, (i<NF && i<3?" ":"")}')
+  json_tags=$(echo "$tags" | tr ' ' '\n' | jq -R . | jq -s -c .)
+  
+  if [ "$DRY_RUN" = "--dry-run" ]; then
+    echo "WOULD TAG $f -> $json_tags"
+  else
+    if [ "$has_fm" = "false" ]; then
+      full_content=$(vault-cli get "$filepath" 2>/dev/null | jq -r '.data.content // ""')
+      if [ -z "$full_content" ]; then
+        echo "FAIL $f: Empty content, SKIP"
+        continue
+      fi
+      yaml_tags="[$(echo $tags | sed 's/ /, /g')]"
+      new_content=$(printf -- '---\ntags: %s\n---\n\n%s' "$yaml_tags" "$full_content")
+      result=$(vault-cli create "$filepath" --content "$new_content" 2>&1)
+    else
+      result=$(vault-cli patch "$filepath" --frontmatter "tags" --operation replace --content "$json_tags" 2>&1)
+    fi
+    
+    if echo "$result" | jq -e '.ok == true' >/dev/null 2>&1; then
+      echo "OK $f: $json_tags"
+    else
+      echo "FAIL $f: $(echo "$result" | jq -r '.error // "unknown"')"
+    fi
+  fi
+}
+
+# Start processing from root folder
+process_folder "$FOLDER"
+
+echo ""
+echo "Done"

@@ -47,21 +47,36 @@ If a file has no frontmatter section (empty `frontmatter: {}`), the patch operat
    vault-cli get "path/to/note.md"
    ```
 
-2. **Create new content** with frontmatter prepended:
+2. **Create new content** with frontmatter prepended using a temporary file:
    ```bash
    # Read FULL content (no --max-chars parameter!)
    content=$(OBSIDIAN_API_KEY=... vault-cli get "path/to/note.md" | jq -r '.data.content')
    
-   # Create new content with frontmatter
-   new_content=$(printf -- '---\ntags: ["tag1", "tag2", "tag3"]\n---\n\n%s' "$content")
+   # Create new content with frontmatter in a temporary file
+   tmpfile=$(mktemp)
+   printf -- '---\ntags: ["tag1", "tag2", "tag3"]\n---\n\n%s' "$content" > "$tmpfile"
    
-   # Overwrite file using create command
-   OBSIDIAN_API_KEY=... vault-cli create "path/to/note.md" --content "$new_content"
+   # Overwrite file using create command with the temp file
+   OBSIDIAN_API_KEY=... vault-cli create "path/to/note.md" --content "$(cat "$tmpfile")"
+   
+   # Clean up
+   rm "$tmpfile"
    ```
 
-3. **Important**: Do NOT use `--max-chars` when reading content for this operation, as truncated content will lose data
+3. **CRITICAL**: 
+   - Do NOT use `--max-chars` when reading content for this operation, as truncated content will lose data
+   - Do NOT use stdin (`--content -`) as it can result in empty files
+   - ALWAYS verify the content was written correctly after the operation
+   - Use a temporary file to ensure content is properly passed to vault-cli
 
-4. **Alternative**: Note the file for manual review if content is very large or sensitive
+4. **Verification after creating**:
+   ```bash
+   # Verify the file was updated correctly
+   OBSIDIAN_API_KEY=... vault-cli get "path/to/note.md" --metadata-only | jq '.data.stat.size'
+   ```
+   If size is 1 byte or unexpectedly small, the operation failed and file needs to be restored from backup.
+
+5. **Alternative**: For large files (>10KB) or sensitive content, note the file for manual review instead of automated processing
 
 ## Guidelines
 
